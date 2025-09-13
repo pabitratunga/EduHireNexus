@@ -1,0 +1,175 @@
+SYSTEM / ARCHITECT PROMPT — BUILD A PRODUCTION-READY FACULTY-JOBS WEB APP (WITH MANDATORY ACCOUNT VERIFICATION)
+
+You are a senior full-stack engineer. Generate a complete, production-ready web app with the following spec. Use opinionated best practices and include ALL required files, configs, security, tests, and deployment instructions.
+
+GOAL
+Build a faculty-jobs marketplace where:
+- Job-seekers browse/search faculty positions and apply.
+- Employers (institutions/HR) post jobs.
+- Admin approves employers and jobs.
+- EVERY user must verify their account (email verification) before accessing protected features.
+- Tech stack and Firebase integration are mandatory.
+
+TECH STACK
+- Framework: Next.js 14 (App Router) + TypeScript
+- UI: Tailwind CSS + shadcn/ui + Lucide icons
+- Forms/Validation: React Hook Form + Zod
+- State/Server: React Server Components + Route Handlers + Server Actions (where sensible)
+- Auth & Backend: Firebase (v10 modular) — Auth, Firestore, Storage, Cloud Functions, Admin SDK
+- Utilities: date-fns, lodash-es (light use), strip-ansi (if needed), clsx, radix-ui where used by shadcn
+- Testing: Vitest + Testing Library (components), Playwright (E2E)
+- Lint/Format: ESLint (next/core-web-vitals), Prettier
+- Deployment: Vercel (SSR for job pages)
+- Internationalization: Simple i18n scaffold (EN primary; easily extendable to HI)
+
+ARCHITECTURE & CORE REQUIREMENTS
+
+1) AUTHENTICATION & VERIFICATION (MANDATORY)
+- Firebase Auth providers: Email/Password (mandatory), Google (optional), Phone OTP (optional but scaffolded).
+- Enforce email verification before any of the following: posting a job, applying to a job, accessing dashboards.
+- On sign-up: send verification email and show a “Verify your email” screen with a “Resend link”.
+- Middleware to gate protected routes: if !emailVerified => redirect to /verify.
+- Roles via Firebase custom claims: "seeker" (default), "employer" (after admin approval), "admin".
+- Create a Firestore user profile doc on first login (Cloud Function onAuth create): users/{uid}.
+
+2) ROLES & ACCESS
+- seeker: can create a profile, upload resume (PDF only), apply to approved jobs.
+- employer: can create/edit company profile, submit job posts; posts are PENDING until admin approves.
+- admin: approve/reject employers and jobs, moderate content, manage abuse reports, set roles via secure callable functions.
+
+3) DATA MODEL (FIRESTORE)
+Collections (with example fields & constraints):
+- users/{uid}:
+  { displayName, email, role: "seeker"|"employer"|"admin", emailVerified: boolean, createdAt, updatedAt }
+- companies/{companyId}:
+  { name, website, orgType: "IIT"|"NIT"|"Private"|"State"|"Deemed"|..., hrEmail, logoPath, address, proofDocs: [storagePaths], ownerUid, status: "pending"|"approved"|"rejected", createdAt, updatedAt }
+- jobs/{jobId}:
+  { title, department, level: "Assistant Professor"|"Associate"|"Professor"|..., instituteType, employmentType: "Full-time"|"Contract", location: {city, state, country}, minSalary, maxSalary, currency,
+    qualifications: [strings], skills: [strings], responsibilities: [strings],
+    lastDate: Timestamp, applyMode: "external"|"internal", applyUrl, companyId, posterUid,
+    status: "pending"|"approved"|"rejected"|"expired", approvedBy, approvedAt, createdAt, updatedAt }
+- applications/{applicationId}:
+  { jobId, applicantUid, resumePath, coverLetter, status: "submitted"|"reviewed"|"shortlisted"|"rejected"|"offered",
+    createdAt, updatedAt, dedupeKey } // dedupeKey to prevent duplicate apply.
+- reports/{reportId} (abuse/moderation):
+  { type: "job"|"company"|"user", targetId, reporterUid, reason, notes, createdAt }
+- auditLogs/{logId}:
+  { actorUid, action, targetType, targetId, metadata, timestamp }
+
+Required composite indexes:
+- jobs by (status, lastDate desc)
+- jobs by (status, instituteType, lastDate desc)
+- jobs by (status, department, lastDate desc)
+- applications by (applicantUid, createdAt desc)
+(Generate indexes.json and mention in README.)
+
+4) STORAGE (RESUMES, LOGOS, PROOFS)
+- /resumes/{uid}/{uuid}.pdf — max 5 MB, PDF only.
+- /logos/{companyId}.png — max 1 MB.
+- /proofs/{companyId}/{uuid}.pdf — max 5 MB.
+
+5) SECURITY RULES (FIRESTORE & STORAGE) — ENFORCE EMAIL VERIFIED + ROLES
+Firestore rules (outline exact logic):
+- allow read on jobs where resource.data.status == "approved".
+- Employers:
+  - create company: auth != null && auth.token.email_verified == true.
+  - update company: only ownerUid && status != "approved" (once approved, edits limited to specific fields; admin can fully edit).
+  - create job: auth != null && auth.token.email_verified == true && auth.token.role == "employer"; job.status must be "pending" on create; posterUid == auth.uid.
+  - update job: only posterUid, only while status == "pending".
+- Seekers:
+  - create/update user profile: auth.uid match.
+  - create application: auth != null && email_verified == true && role == "seeker"; job.status must be "approved"; prevent multiple applies via server function (not direct client write).
+- Admin:
+  - can read/write everything via custom claims (role == "admin").
+Storage rules:
+- resumes: only owner uid can write/read their own; employers of that job can read attached resumes via time-limited signed URLs (generated server-side).
+- logos/proofs: employers (ownerUid) can write; public read for logos; proofs read only by admin.
+
+(Implement these rules explicitly in firebase.rules and storage.rules following the above conditions.)
+
+6) CLOUD FUNCTIONS (ADMIN SDK)
+- onAuth user creation: create users/{uid} with emailVerified flag, role "seeker".
+- callable: requestEmployerUpgrade(company payload + proof docs). This creates companies doc with status "pending".
+- callable (admin only): approveEmployerUpgrade(uid, companyId) → set custom claim role="employer", mark company status="approved".
+- callable (employer only): createJob(jobPayload) → writes jobs/{id} with status "pending".
+- callable (admin only): approveJob(jobId) → set status="approved", approvedBy/approvedAt.
+- scheduled (daily): expire jobs past lastDate (set status="expired", do not delete).
+- callable: applyToJob(jobId, resumeRef, coverLetter) enforces dedupe and job status approved.
+- callable: signUrlForResume(applicationId) → restricted to poster employer or admin.
+
+Use region closest to India (e.g., asia-south1).
+
+7) UI / PAGES
+Public:
+- / : Landing — search bar, featured approved jobs, categories (Mathematics, Statistics, Control Theory, etc.).
+- /jobs : List w/ filters (department, instituteType, level, location, postedWithin, sort), server-side paginated (infinite scroll optional).
+- /jobs/[jobId] : Job details (SEO meta tags, structured data), “Apply” CTA.
+- /auth/(sign-in|sign-up|verify|reset) : auth flows; verify page explains email verification + resend.
+
+Protected (emailVerified required):
+- /profile (seeker): personal info, resume upload, applications list & statuses.
+- /employer : company setup wizard (name, website, org type, proof docs upload), status banner (pending/approved).
+- /employer/jobs : dashboard to draft/submit jobs, see approval status, view applicants (once approved).
+- /admin : review queues — employers, jobs; moderation tools; set roles; audit logs.
+
+8) SEARCH & FILTER
+- Client filters + Firestore queries; for text search, implement simple keywords (title/department/institute) with array of tokens; optionally add a lightweight trigram index field; or integrate with Firestore “where in / array-contains-any” patterns. Ensure composite indexes exist.
+
+9) NOTIFICATIONS
+- Email: on verification, on job approved, on application received. Use Firebase Extensions (Email with SendGrid) or nodemailer via function (configurably).
+- In-app toasts + bell notifications (Firestore listener).
+
+10) SECURITY, ABUSE, & HARDENING
+- Require email_verified for all writes (except initial profile create).
+- Rate limit callable functions (per uid/IP), include reCAPTCHA on auth/sign-up and apply flows.
+- Sanitize rich text inputs (if any).
+- Audit log every privileged action (admin approvals, role changes).
+- CSRF safe (Next.js route handlers + POST only for state-changing; same-site cookies if needed).
+- Content moderation quick flags (job spam, misleading employers).
+
+11) DEVEX & DEPLOY
+- .env.local and .env.example with:
+  FIREBASE_API_KEY, FIREBASE_AUTH_DOMAIN, FIREBASE_PROJECT_ID, FIREBASE_STORAGE_BUCKET, FIREBASE_MESSAGING_SENDER_ID, FIREBASE_APP_ID, FIREBASE_MEASUREMENT_ID
+  FIREBASE_EMULATOR=1 (for local)
+  SENDGRID_*
+- Scripts:
+  - dev with Firebase emulators (auth, firestore, storage, functions)
+  - build, test, e2e
+  - seed: sample employers, jobs (Mathematics at IIT Patna etc.), seekers
+- README: step-by-step (Firebase project setup, enable providers, deploy rules/functions, Vercel deploy, required indexes).
+- Provide a full repository tree in the output and inline file contents for all source files.
+
+12) TEST PLAN (GENERATE TESTS)
+- Unit tests:
+  - role guard utils, schema validations (Zod), date guards (lastDate), status transitions.
+- Integration:
+  - creating a company → pending → admin approves → role becomes employer.
+  - employer creates job → pending → admin approves → job visible on /jobs.
+  - seeker applies → application stored; duplicate prevented.
+- E2E (Playwright):
+  - sign-up → verify email (mock) → try to post job (blocked until employer approval).
+  - sign-in seeker → apply to approved job.
+  - admin approves queues and sees updated UI.
+
+13) CODE QUALITY
+- Strong typing; no any.
+- Split server/client components appropriately; no secrets on client.
+- Minimal but clear comments; JSDoc on critical server functions.
+- Accessibility (labels, focus rings, keyboard navigation).
+- Mobile-first responsive design.
+
+14) BRANDING / COPY
+- App name placeholder: “EduHire Faculty”.
+- Primary sections: Mathematics, Statistics, Control Theory (editable).
+
+ACCEPTANCE CRITERIA (MUST PASS)
+- No protected action possible unless emailVerified == true.
+- Only admin can grant employer role and approve jobs.
+- Only approved jobs appear publicly.
+- Storage & Firestore rules prevent privilege escalation from client.
+- Full working deploy on Vercel + Firebase (Functions/Rules) with the provided README.
+
+DELIVERABLE
+Output the complete repository (file tree + file contents), plus README, plus firebase rules and functions code, plus tests, plus indexes.json. Do NOT use placeholders for security rules—write them. Do NOT hardcode Firebase config; read from env.
+
+End of spec.

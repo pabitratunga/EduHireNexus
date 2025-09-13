@@ -1,0 +1,75 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    
+    // Helper function to check if user is authenticated and email verified
+    function isAuthenticatedAndVerified() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+    
+    // Helper function to check user role
+    function hasRole(role) {
+      return request.auth != null && request.auth.token.role == role;
+    }
+    
+    // Helper function to check file size (in bytes)
+    function isValidSize(maxSize) {
+      return resource == null || resource.size <= maxSize;
+    }
+    
+    // Helper function to check file type
+    function isValidFileType(allowedTypes) {
+      return resource == null || resource.contentType in allowedTypes;
+    }
+    
+    // Resumes storage - /resumes/{uid}/{fileName}
+    match /resumes/{uid}/{fileName} {
+      // Only the owner can upload, read, update, or delete their resumes
+      allow read, write, delete: if isAuthenticatedAndVerified() && 
+        request.auth.uid == uid &&
+        isValidSize(5 * 1024 * 1024) && // 5MB limit
+        isValidFileType(['application/pdf']);
+        
+      // Employers can read resumes of applicants to their jobs (via signed URLs)
+      // This is handled by server-side functions, not direct client access
+    }
+    
+    // Company logos storage - /logos/{companyId}/{fileName}
+    match /logos/{companyId}/{fileName} {
+      // Public read access for company logos
+      allow read: if true;
+      
+      // Company owner can upload/update logos
+      allow write: if isAuthenticatedAndVerified() &&
+        hasRole('employer') &&
+        isValidSize(1 * 1024 * 1024) && // 1MB limit
+        isValidFileType(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+      
+      // Admin can manage all logos
+      allow write, delete: if hasRole('admin');
+    }
+    
+    // Proof documents storage - /proofs/{companyId}/{fileName}
+    match /proofs/{companyId}/{fileName} {
+      // Only admin can read proof documents
+      allow read: if hasRole('admin');
+      
+      // Company owner can upload proof documents
+      allow write: if isAuthenticatedAndVerified() &&
+        hasRole('employer') &&
+        isValidSize(5 * 1024 * 1024) && // 5MB limit
+        isValidFileType(['application/pdf', 'image/jpeg', 'image/png']);
+      
+      // Admin can manage all proof documents
+      allow write, delete: if hasRole('admin');
+    }
+    
+    // Temporary uploads - /temp/{uid}/{fileName}
+    match /temp/{uid}/{fileName} {
+      // Users can upload temporary files for processing
+      allow read, write, delete: if isAuthenticatedAndVerified() && 
+        request.auth.uid == uid &&
+        isValidSize(10 * 1024 * 1024); // 10MB limit for temp files
+    }
+  }
+}

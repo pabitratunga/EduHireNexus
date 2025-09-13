@@ -1,0 +1,146 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper function to check if user is authenticated and email verified
+    function isAuthenticatedAndVerified() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+    
+    // Helper function to check user role
+    function hasRole(role) {
+      return request.auth != null && request.auth.token.role == role;
+    }
+    
+    // Helper function to check if user owns the resource
+    function isOwner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+    
+    // Users collection
+    match /users/{userId} {
+      // Users can read and write their own profile
+      allow read, write: if isOwner(userId);
+      // Admin can read all users
+      allow read: if hasRole('admin');
+      // Admin can update user roles
+      allow update: if hasRole('admin') && 
+        request.writeFields.hasOnly(['role', 'updatedAt']);
+    }
+    
+    // Companies collection
+    match /companies/{companyId} {
+      // Anyone can read approved companies (for job listings)
+      allow read: if resource.data.status == 'approved';
+      
+      // Only authenticated and verified users can create companies
+      allow create: if isAuthenticatedAndVerified() && 
+        request.resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.status == 'pending';
+      
+      // Company owners can update their company if it's not approved yet
+      allow update: if isAuthenticatedAndVerified() && 
+        isOwner(resource.data.ownerUid) && 
+        resource.data.status == 'pending';
+      
+      // Company owners can update specific fields even after approval
+      allow update: if isAuthenticatedAndVerified() && 
+        isOwner(resource.data.ownerUid) && 
+        resource.data.status == 'approved' &&
+        request.writeFields.hasOnly(['phone', 'address', 'updatedAt']);
+      
+      // Admin can read and update all companies
+      allow read, update: if hasRole('admin');
+    }
+    
+    // Jobs collection
+    match /jobs/{jobId} {
+      // Anyone can read approved jobs
+      allow read: if resource.data.status == 'approved';
+      
+      // Job poster and admin can always read their jobs
+      allow read: if isAuthenticatedAndVerified() && 
+        (isOwner(resource.data.posterUid) || hasRole('admin'));
+      
+      // Only employers with verified email can create jobs
+      allow create: if isAuthenticatedAndVerified() && 
+        hasRole('employer') &&
+        request.resource.data.posterUid == request.auth.uid &&
+        request.resource.data.status == 'pending';
+      
+      // Job poster can update job only while it's pending
+      allow update: if isAuthenticatedAndVerified() && 
+        isOwner(resource.data.posterUid) && 
+        resource.data.status == 'pending';
+      
+      // Admin can update any job
+      allow update: if hasRole('admin');
+      
+      // Admin can delete jobs
+      allow delete: if hasRole('admin');
+    }
+    
+    // Applications collection
+    match /applications/{applicationId} {
+      // Applicant can read their own applications
+      allow read: if isAuthenticatedAndVerified() && 
+        isOwner(resource.data.applicantUid);
+      
+      // Job poster can read applications for their jobs
+      allow read: if isAuthenticatedAndVerified() && 
+        hasRole('employer') &&
+        exists(/databases/$(database)/documents/jobs/$(resource.data.jobId)) &&
+        get(/databases/$(database)/documents/jobs/$(resource.data.jobId)).data.posterUid == request.auth.uid;
+      
+      // Admin can read all applications
+      allow read: if hasRole('admin');
+      
+      // Only seekers can create applications (server function handles this)
+      // Direct client writes are not allowed for applications
+      allow create: if false;
+      
+      // Job poster can update application status
+      allow update: if isAuthenticatedAndVerified() && 
+        hasRole('employer') &&
+        exists(/databases/$(database)/documents/jobs/$(resource.data.jobId)) &&
+        get(/databases/$(database)/documents/jobs/$(resource.data.jobId)).data.posterUid == request.auth.uid &&
+        request.writeFields.hasOnly(['status', 'notes', 'updatedAt']);
+      
+      // Admin can update applications
+      allow update: if hasRole('admin');
+    }
+    
+    // Reports collection
+    match /reports/{reportId} {
+      // Only authenticated users can create reports
+      allow create: if isAuthenticatedAndVerified() && 
+        request.resource.data.reporterUid == request.auth.uid &&
+        request.resource.data.status == 'pending';
+      
+      // Reporter can read their own reports
+      allow read: if isAuthenticatedAndVerified() && 
+        isOwner(resource.data.reporterUid);
+      
+      // Admin can read and update all reports
+      allow read, update: if hasRole('admin');
+    }
+    
+    // Audit logs collection
+    match /auditLogs/{logId} {
+      // Only admin can read audit logs
+      allow read: if hasRole('admin');
+      
+      // Only server functions can write audit logs
+      allow write: if false;
+    }
+    
+    // Statistics collection (if needed for caching)
+    match /statistics/{statId} {
+      // Anyone can read statistics
+      allow read: if true;
+      
+      // Only admin or server functions can write statistics
+      allow write: if hasRole('admin');
+    }
+  }
+}
