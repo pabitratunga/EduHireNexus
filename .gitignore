@@ -1,0 +1,5 @@
+
+# Local/IDE
+.local/
+.replit
+.DS_Store
